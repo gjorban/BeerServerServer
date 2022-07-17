@@ -185,9 +185,6 @@ void processTemps()
   {
     sensors.requestTemperatures(); 
     current_fridge_temp = sensors.getTempCByIndex(0);
-   // Serial.print(temperatureC);
-    //Serial.println("ºC");
-
     next_temp_check = now + k_TimeBetweenTempChecksMillis;
 
     float temp_threshold = desired_fridge_temp;
