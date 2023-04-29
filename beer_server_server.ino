@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WebServer.h>
+
 #include <ESPmDNS.h>
 #include <Update.h>
 
@@ -23,18 +24,20 @@ extern const char *k_WifiSSID;
 extern const char *k_WifiPassword;
 extern const char *k_HostName;
 
-const long k_TimeBetweenTempChecksMillis = 1000l;
-const long k_MinRelayTimeOn = 1 * 60 * 1000; // 1 minute
-const long k_MinRelayTimeOff = 2 * 60 * 1000; // 2 minutes
+const unsigned long k_TimeBetweenTempChecksMillis = 1000ul;
+const unsigned long k_MinRelayTimeOn = 1 * 60 * 1000; // 1 minute
+const unsigned long k_MinRelayTimeOff = 2 * 60 * 1000; // 2 minutes
 
-long next_temp_check = 0l;
-long next_relay_state_change = 0l;
-long last_relay_state_change = 0l;
+unsigned long next_temp_check = 0l;
+unsigned long next_relay_state_change = 0l;
+unsigned long last_relay_state_change = 0l;
+
+unsigned long num_timer_overflows = 0ul;
 
 float current_fridge_temp = 0.0f;
-float desired_fridge_temp = 8.0f;
+float desired_fridge_temp = 5.5f;
 
-const float k_TempHysteresisCelsius = 1.5f;
+float tempHysteresisCelsius = 0.5f;
 
 void setCompressorState(const long &now, bool force = false);
 
@@ -70,6 +73,10 @@ void handle_on_access() {
         
     output += "<p>Set temp: ";
     dtostrf(desired_fridge_temp,5, 2, scratch);
+    output += scratch;
+    output += " +/-";
+
+    dtostrf(tempHysteresisCelsius,5, 2, scratch);
     output += scratch;
     output += "*C</p>\n";
     
@@ -123,9 +130,56 @@ void handle_on_access() {
       output += scratch;
       output += "</p>\n"; 
     }
+
+    output += "<p>Number of timer overflows: ";
+    dtostrf(num_timer_overflows, 2, 0, scratch);
+    output += scratch;
+    output += "</p>\n";
     
     output += "</body>";
     server.send(200, "text/html", output);
+}
+
+void handle_temp_set() {
+  // Send a GET request to <ESP_IP>/get?input1=<inputMessage>
+  String inputMessage;
+  String inputParam;
+  // GET input1 value on <ESP_IP>/set?input1=<inputMessage>
+  const char *TEMP_PARAM="temp";
+  const char *HYSTERESIS_PARAM="hysteresis";
+  if (server.hasArg(TEMP_PARAM)) 
+  {
+    inputMessage = server.arg(TEMP_PARAM);
+    float new_temp = inputMessage.toFloat();
+    if (new_temp > 4.0f && new_temp < 12.0f)
+    {
+      desired_fridge_temp = new_temp;
+    }
+    inputParam = TEMP_PARAM;
+  }
+  // GET input2 value on <ESP_IP>/set?input2=<inputMessage>
+  else if (server.hasArg(HYSTERESIS_PARAM)) 
+  {
+    inputMessage = server.arg(HYSTERESIS_PARAM);
+
+    float new_hysteresis = inputMessage.toFloat();
+
+    if (new_hysteresis > 0.0f && new_hysteresis < 1.0f)
+    {
+      tempHysteresisCelsius = new_hysteresis;
+    }
+    
+    inputParam = HYSTERESIS_PARAM;
+  }
+  else 
+  {
+    inputMessage = "No message sent";
+    inputParam = "none";
+  }
+  Serial.println(inputMessage);
+  server.send(200, "text/html", "HTTP GET request sent to your ESP on input field (" 
+                                   + inputParam + ") with value: " + inputMessage +
+                                   "<br><a href=\"/\">Return to Home Page</a>");
 }
 
 void setup() {
@@ -149,6 +203,7 @@ void setup() {
   Serial.println(WiFi.localIP());
   MDNS.begin(k_HostName);
   server.on("/", HTTP_GET, handle_on_access);
+  server.on("/set", HTTP_GET, handle_temp_set);
   server.begin();
   MDNS.addService("http", "tcp", 80);
 
@@ -177,9 +232,26 @@ void setCompressorState(const long &now, bool force)
   }
 }
 
+
+void resetAllCounters()
+{
+  auto now = millis();
+  next_temp_check = now + k_TimeBetweenTempChecksMillis; 
+  next_relay_state_change = now;
+  last_relay_state_change = now;
+}
+
 void processTemps()
 {
-  long now = millis();
+  auto now = millis();
+
+  if (now < last_relay_state_change)
+  {
+    // We've overflowed, so reset all counters
+    resetAllCounters();
+    num_timer_overflows++;
+    Serial.printf("Restting counters\n");
+  }
 
   if (now >= next_temp_check)
   {
@@ -189,11 +261,11 @@ void processTemps()
 
     float temp_threshold = desired_fridge_temp;
     bool new_state = compressor_wants_to_run;
-    if (new_state && current_fridge_temp < (desired_fridge_temp - k_TempHysteresisCelsius))
+    if (new_state && current_fridge_temp < (desired_fridge_temp - tempHysteresisCelsius))
     {
       new_state = false;
     }
-    else if (!new_state && current_fridge_temp > (desired_fridge_temp + k_TempHysteresisCelsius))
+    else if (!new_state && current_fridge_temp > (desired_fridge_temp + tempHysteresisCelsius))
     {
       new_state = true;
     }
